@@ -5,8 +5,7 @@ let yt: Innertube | null = null;
 const initYt = async () => {
   if (!yt) {
     yt = await Innertube.create({
-      cache: new UniversalCache(false),
-      generate_session_locally: true
+      cache: new UniversalCache(false)
     });
   }
   return yt;
@@ -35,18 +34,54 @@ export const streamMusic = async (videoId: string) => {
 
 export const getHome = async () => {
   const yt = await initYt();
-  const home = await yt.music.getHomeFeed();
-  return {
-    home: home.sections?.map((section: any) => ({
+  try {
+    const home = await yt.music.getHomeFeed();
+    const sections = home.sections?.map((section: any) => ({
       title: section.title?.text || section.header?.title?.text,
-      contents: section.contents?.map((item: any) => ({
-        videoId: item.id,
-        title: item.title,
-        artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
-        thumbnails: item.thumbnails || []
-      }))
-    })) || []
-  };
+      contents: section.contents?.map((item: any) => {
+        const isAlbum = item.id?.startsWith('MPREb');
+        const isPlaylist = item.id?.startsWith('PL') || item.id?.startsWith('VLPL') || item.id?.startsWith('RD') || item.id?.startsWith('OLAK5uy_');
+        return {
+          videoId: (!isAlbum && !isPlaylist) ? item.id : undefined,
+          playlistId: isPlaylist ? item.id : undefined,
+          browseId: isAlbum ? item.id : undefined,
+          title: item.title,
+          artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
+          thumbnails: item.thumbnails || []
+        };
+      })
+    })) || [];
+
+    if (sections.length > 0) {
+      return { home: sections };
+    }
+  } catch (e) {
+    console.error("Home feed error", e);
+  }
+
+  // Fallback: search for top playlists if home feed is empty
+  try {
+    const res1 = await yt.music.search("Global Top Songs", { type: 'playlist' });
+    const res2 = await yt.music.search("Trending Music", { type: 'playlist' });
+    const res3 = await yt.music.search("Top Hits", { type: 'playlist' });
+
+    const mapPlaylist = (res: any) => res.contents?.slice(0, 10).map((item: any) => ({
+      playlistId: item.id,
+      title: item.title,
+      artists: item.author ? [{ name: item.author }] : [],
+      thumbnails: item.thumbnails || []
+    })) || [];
+
+    return {
+      home: [
+        { title: "Global Top Songs", contents: mapPlaylist(res1) },
+        { title: "Trending Music", contents: mapPlaylist(res2) },
+        { title: "Top Hits", contents: mapPlaylist(res3) }
+      ].filter(s => s.contents.length > 0)
+    };
+  } catch (e) {
+    return { home: [] };
+  }
 };
 
 export const getRelated = async (videoId: string) => {
