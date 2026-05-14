@@ -1,11 +1,53 @@
 // @ts-nocheck
 import { Innertube, UniversalCache } from 'youtubei.js';
 
+const customFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  let url = '';
+  let requestMethod = 'GET';
+  let requestHeaders = new Headers();
+  let requestBody: any = undefined;
+
+  if (input instanceof Request) {
+    url = input.url;
+    requestMethod = input.method;
+    requestHeaders = new Headers(input.headers);
+    requestBody = input.body;
+  } else {
+    url = input.toString();
+  }
+
+  const newInit: RequestInit = {
+    method: init?.method || requestMethod || 'GET',
+    headers: init?.headers ? new Headers(init.headers) : requestHeaders,
+    body: init?.body !== undefined ? init.body : requestBody,
+    ...init
+  };
+
+  const method = newInit.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD') {
+    delete newInit.body;
+  }
+
+  if (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.')) {
+    url = url.replace('https://www.youtube.com', '/proxy/youtube')
+             .replace('https://music.youtube.com', '/proxy/music')
+             .replace('https://suggestqueries.google.com', '/proxy/suggest');
+  }
+
+  try {
+    return await fetch(url, newInit);
+  } catch (error) {
+    console.error("Fetch error for url:", url, "error:", error);
+    throw error;
+  }
+};
+
 let yt: Innertube | null = null;
 const initYt = async () => {
   if (!yt) {
     yt = await Innertube.create({
-      cache: new UniversalCache(false)
+      cache: new UniversalCache(false),
+      fetch: customFetch
     });
   }
   return yt;
@@ -13,23 +55,62 @@ const initYt = async () => {
 
 export const searchMusic = async (query: string) => {
   const yt = await initYt();
-  const search = await yt.music.search(query, { type: 'song' });
+  
+  const [songs, albums, artists] = await Promise.all([
+    yt.music.search(query, { type: 'song' }).catch(() => ({})),
+    yt.music.search(query, { type: 'album' }).catch(() => ({})),
+    yt.music.search(query, { type: 'artist' }).catch(() => ({}))
+  ]);
+  
+  const extract = (res: any) => res.songs?.contents || res.contents?.[0]?.contents || res.albums?.contents || res.artists?.contents || [];
+  
+  const allContents = [
+    ...extract(songs).slice(0, 10),
+    ...extract(albums).slice(0, 5),
+    ...extract(artists).slice(0, 5)
+  ];
+
   return {
-    results: search.contents?.map((item: any) => ({
-      videoId: item.id,
-      title: item.title,
-      artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
-      thumbnails: item.thumbnails || []
-    })) || []
+    results: allContents.map((item: any) => {
+      const id = item.id || "";
+      const isAlbum = id.startsWith('MPREb');
+      const isPlaylist = id.startsWith('PL') || id.startsWith('VLPL') || id.startsWith('RD') || id.startsWith('VLRD') || id.startsWith('OLAK5uy_');
+      const isArtist = id.startsWith('UC') && !isPlaylist;
+
+      return {
+        videoId: (!isAlbum && !isPlaylist && !isArtist) ? id : undefined,
+        playlistId: isPlaylist ? id : undefined,
+        browseId: (isAlbum || isArtist) ? id : undefined,
+        title: typeof item.title === 'string' ? item.title : (item.title?.text || item.title?.toString() || item.name?.text || item.name?.toString() || "Unknown"),
+        artists: item.artists?.map((a: any) => ({ name: typeof a.name === 'string' ? a.name : (a.name?.text || a.name?.toString() || "") })) || [],
+        thumbnails: item.thumbnails || []
+      };
+    })
   };
 };
 
 export const streamMusic = async (videoId: string) => {
   const yt = await initYt();
-  const info = await yt.getBasicInfo(videoId);
-  const format = info.chooseFormat({ type: 'audio', quality: 'best' });
-  const url = format?.decipher ? await Promise.resolve(format.decipher(yt.session.player)) : format?.url;
-  return { url: url || null };
+  try {
+    const info = await yt.getBasicInfo(videoId);
+    const format = info.chooseFormat({ type: 'audio', quality: 'best' });
+    
+    if (format?.url) {
+      return { url: format.url };
+    }
+    
+    // @ts-ignore - signatureCipher might be available
+    if ((format?.signature_cipher || format?.signatureCipher) && format?.decipher) {
+      const decipheredUrl = await Promise.resolve(format.decipher(yt.session.player));
+      return { url: decipheredUrl };
+    }
+
+    console.warn(`YouTube blocked stream fetching for ${videoId} (No valid URL or cipher). This is due to YouTube's recent bot protection mechanisms.`);
+    return { url: null };
+  } catch (e) {
+    console.error("streamMusic error", e);
+    return { url: null };
+  }
 };
 
 export const getHome = async () => {
@@ -37,16 +118,17 @@ export const getHome = async () => {
   try {
     const home = await yt.music.getHomeFeed();
     const sections = home.sections?.map((section: any) => ({
-      title: section.title?.text || section.header?.title?.text,
+      title: typeof section.header?.title?.text === 'string' ? section.header.title.text : (section.title?.text || section.title?.toString() || "Recommended"),
       contents: section.contents?.map((item: any) => {
-        const isAlbum = item.id?.startsWith('MPREb');
-        const isPlaylist = item.id?.startsWith('PL') || item.id?.startsWith('VLPL') || item.id?.startsWith('RD') || item.id?.startsWith('OLAK5uy_');
+        const id = item.id || "";
+        const isAlbum = id.startsWith('MPREb');
+        const isPlaylist = id.startsWith('PL') || id.startsWith('VLPL') || id.startsWith('RD') || id.startsWith('VLRD') || id.startsWith('OLAK5uy_');
         return {
-          videoId: (!isAlbum && !isPlaylist) ? item.id : undefined,
-          playlistId: isPlaylist ? item.id : undefined,
-          browseId: isAlbum ? item.id : undefined,
-          title: item.title,
-          artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
+          videoId: (!isAlbum && !isPlaylist) ? id : undefined,
+          playlistId: isPlaylist ? id : undefined,
+          browseId: isAlbum ? id : undefined,
+          title: typeof item.title === 'string' ? item.title : (item.title?.text || item.title?.toString() || ""),
+          artists: item.artists?.map((a: any) => ({ name: typeof a.name === 'string' ? a.name : (a.name?.text || a.name?.toString() || "") })) || [],
           thumbnails: item.thumbnails || []
         };
       })
@@ -65,10 +147,10 @@ export const getHome = async () => {
     const res2 = await yt.music.search("Trending Music", { type: 'playlist' });
     const res3 = await yt.music.search("Top Hits", { type: 'playlist' });
 
-    const mapPlaylist = (res: any) => res.contents?.slice(0, 10).map((item: any) => ({
+    const mapPlaylist = (res: any) => res.playlists?.contents?.slice(0, 10).map((item: any) => ({
       playlistId: item.id,
-      title: item.title,
-      artists: item.author ? [{ name: item.author }] : [],
+      title: typeof item.title === 'string' ? item.title : (item.title?.text || item.title?.toString() || ""),
+      artists: item.author ? [{ name: typeof item.author === 'string' ? item.author : (item.author?.name || item.author?.text || item.author?.toString() || "") }] : [],
       thumbnails: item.thumbnails || []
     })) || [];
 
@@ -90,8 +172,8 @@ export const getRelated = async (videoId: string) => {
   return {
     related: upNext.contents?.map((item: any) => ({
       videoId: item.id,
-      title: item.title,
-      artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
+      title: typeof item.title === 'string' ? item.title : (item.title?.text || item.title?.toString() || ""),
+      artists: item.artists?.map((a: any) => ({ name: typeof a.name === 'string' ? a.name : (a.name?.text || a.name?.toString() || "") })) || [],
       thumbnails: item.thumbnails || []
     })) || []
   };
@@ -100,7 +182,15 @@ export const getRelated = async (videoId: string) => {
 export const getSuggestions = async (query: string) => {
   const yt = await initYt();
   const suggestions = await yt.music.getSearchSuggestions(query);
-  return { suggestions: suggestions.map(s => s.text) || [] };
+  let result: string[] = [];
+  if (suggestions.length > 0) {
+    if (suggestions[0].type === 'SearchSuggestionsSection') {
+      result = suggestions.flatMap((sec: any) => sec.contents || []).map((s: any) => s.suggestion?.text || s.query || s.text);
+    } else {
+      result = suggestions.map((s: any) => s.suggestion?.text || s.query || s.text);
+    }
+  }
+  return { suggestions: result.filter(Boolean) };
 };
 
 export const getPlaylist = async (browseId: string) => {
@@ -109,22 +199,22 @@ export const getPlaylist = async (browseId: string) => {
     if (browseId.startsWith('MPREb')) {
       const album = await yt.music.getAlbum(browseId);
       return {
-        title: album.header?.title?.text || "Album",
+        title: typeof album.header?.title === 'string' ? album.header.title : (album.header?.title?.text || album.header?.title?.toString() || "Album"),
         tracks: album.contents?.map((item: any) => ({
           videoId: item.id,
-          title: item.title,
-          artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
+          title: typeof item.title === 'string' ? item.title : (item.title?.text || item.title?.toString() || ""),
+          artists: item.artists?.map((a: any) => ({ name: typeof a.name === 'string' ? a.name : (a.name?.text || a.name?.toString() || "") })) || [],
           thumbnails: item.thumbnails || []
         })) || []
       };
     } else {
       const playlist = await yt.music.getPlaylist(browseId);
       return {
-        title: playlist.header?.title?.text || "Playlist",
+        title: typeof playlist.header?.title === 'string' ? playlist.header.title : (playlist.header?.title?.text || playlist.header?.title?.toString() || "Playlist"),
         tracks: playlist.items?.map((item: any) => ({
           videoId: item.id,
-          title: item.title,
-          artists: item.artists?.map((a: any) => ({ name: a.name })) || [],
+          title: typeof item.title === 'string' ? item.title : (item.title?.text || item.title?.toString() || ""),
+          artists: item.artists?.map((a: any) => ({ name: typeof a.name === 'string' ? a.name : (a.name?.text || a.name?.toString() || "") })) || [],
           thumbnails: item.thumbnails || []
         })) || []
       };
@@ -136,11 +226,13 @@ export const getPlaylist = async (browseId: string) => {
 
 export const getLyrics = async (videoId: string, title: string, artist: string) => {
   try {
-    const res = await fetch(`https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.syncedLyrics) return { lyrics: data.syncedLyrics, synced: true };
-      if (data.plainLyrics) return { lyrics: data.plainLyrics, synced: false };
+    if (artist) {
+      const res = await fetch(`https://lrclib.net/api/get?track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.syncedLyrics) return { lyrics: data.syncedLyrics, synced: true };
+        if (data.plainLyrics) return { lyrics: data.plainLyrics, synced: false };
+      }
     }
   } catch (e) {}
   

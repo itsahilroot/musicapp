@@ -12,10 +12,12 @@
   "dependencies": {
     "@capacitor/android": "^8.3.4",
     "@capacitor/core": "^8.3.4",
-    "lucide-react": "^1.14.0",
+    "lucide-react": "^1.16.0",
+    "node-youtube-music": "^0.10.3",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-player": "^3.4.0",
+    "react-youtube": "^10.1.0",
     "youtubei.js": "^17.0.1",
     "ytmusic-api": "^5.3.1"
   },
@@ -32,6 +34,7 @@
     "globals": "^17.6.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vite-plugin-node-polyfills": "^0.26.0"
   }
 }

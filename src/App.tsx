@@ -1,8 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { Search, Play, Pause, SkipForward, SkipBack, Music, Volume2, VolumeX, ChevronDown, Repeat, Repeat1, ArrowLeft } from 'lucide-react';
+import YouTube from 'react-youtube';
 import './index.css';
 
 import { getHome, getSuggestions } from './api';
+
+const imageCache: Record<string, string> = {};
 
 function App() {
   const [query, setQuery] = useState('');
@@ -40,7 +43,7 @@ function App() {
   const [relatedSongs, setRelatedSongs] = useState<any[]>([]);
   const [albumView, setAlbumView] = useState<{ title: string, tracks: any[], cover?: string } | null>(null);
 
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const playerRef = useRef<any>(null);
   const lyricsContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,24 +70,15 @@ function App() {
 
   useEffect(() => {
     if (currentSong) {
-      setStreamUrl(null);
       setPlayed(0);
       setDuration(0);
-      setIsPlaying(false);
+      setIsPlaying(true);
       setLyrics('');
       setSyncedLyrics([]);
       setIsSynced(false);
       setLyricsLoading(true);
 
-      // Fetch audio stream
       import('./api').then(api => {
-        api.streamMusic(currentSong.videoId)
-          .then(data => {
-            setStreamUrl(data.url);
-            setIsPlaying(true);
-          })
-          .catch(err => console.error("Failed to fetch stream URL", err));
-
         // Fetch lyrics
         const artist = currentSong.artists?.[0]?.name || "";
         const title = currentSong.title || "";
@@ -123,15 +117,33 @@ function App() {
   }, [currentSong]);
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
+    if (playerRef.current) {
+      playerRef.current.setVolume(volume * 100);
       if (isPlaying) {
-        audioRef.current.play().catch(e => console.error("Playback failed:", e));
+        playerRef.current.playVideo();
       } else {
-        audioRef.current.pause();
+        playerRef.current.pauseVideo();
       }
     }
-  }, [isPlaying, volume, streamUrl]);
+  }, [isPlaying, volume]);
+
+  // Polling for currentTime since YT Iframe API doesn't have onTimeUpdate
+  useEffect(() => {
+    let interval: any;
+    if (isPlaying) {
+      interval = setInterval(async () => {
+        try {
+          if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function') {
+            const time = await Promise.resolve(playerRef.current.getCurrentTime());
+            setPlayed(time);
+            const dur = await Promise.resolve(playerRef.current.getDuration());
+            if (dur > 0) setDuration(dur);
+          }
+        } catch (e) { }
+      }, 500);
+    }
+    return () => clearInterval(interval);
+  }, [isPlaying]);
 
   // Scroll synced lyrics
   useEffect(() => {
@@ -146,9 +158,9 @@ function App() {
   const handleSongEnd = () => {
     if (repeatMode === 2) {
       // Repeat one
-      if (audioRef.current) {
-        audioRef.current.currentTime = 0;
-        audioRef.current.play();
+      if (playerRef.current) {
+        playerRef.current.seekTo(0);
+        playerRef.current.playVideo();
       }
     } else {
       playNext();
@@ -245,8 +257,8 @@ function App() {
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
     setPlayed(val);
-    if (audioRef.current) {
-      audioRef.current.currentTime = val;
+    if (playerRef.current) {
+      playerRef.current.seekTo(val, true);
     }
   };
 
@@ -266,6 +278,13 @@ function App() {
     setRepeatMode(prev => (prev === 0 ? 1 : prev === 1 ? 2 : 0));
   };
 
+  const handleWheel = (e: React.WheelEvent) => {
+    setVolume(prev => {
+      let newVol = prev - (e.deltaY > 0 ? 0.05 : -0.05);
+      return Math.max(0, Math.min(1, newVol));
+    });
+  };
+
   const getHighResCover = (url?: string) => {
     if (!url) return 'https://via.placeholder.com/500';
     if (url.includes('=')) {
@@ -282,6 +301,12 @@ function App() {
     const fallbackState = img.getAttribute('data-fallback') || '0';
 
     if (fallbackState === '0') {
+      if (imageCache[title]) {
+        img.setAttribute('data-fallback', 'cached');
+        img.src = imageCache[title];
+        return;
+      }
+      
       img.setAttribute('data-fallback', '1');
       if (videoId) {
         img.src = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
@@ -291,25 +316,33 @@ function App() {
 
     if (fallbackState === '1' || (fallbackState === '0' && !videoId)) {
       img.setAttribute('data-fallback', '2');
-      fetch(`https://www.jiosaavn.com/api.php?__call=autocomplete.get&query=${encodeURIComponent(title)}&_format=json&_marker=0&ctx=web6dot0`)
+      let jioSaavnUrl = `https://www.jiosaavn.com/api.php?__call=autocomplete.get&query=${encodeURIComponent(title)}&_format=json&_marker=0&ctx=web6dot0`;
+      if (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.')) {
+        jioSaavnUrl = `/proxy/jiosaavn/api.php?__call=autocomplete.get&query=${encodeURIComponent(title)}&_format=json&_marker=0&ctx=web6dot0`;
+      }
+      fetch(jioSaavnUrl)
         .then(res => res.json())
         .then(data => {
           if ('songs' in data && 'data' in data['songs'] && data['songs']['data'].length > 0) {
             let coverImg = data['songs']['data'][0]['image'];
             coverImg = coverImg.replace('50x50', '500x500');
+            imageCache[title] = coverImg;
             img.src = coverImg;
           } else {
             img.setAttribute('data-fallback', '3');
-            img.src = 'https://via.placeholder.com/500?text=No+Cover';
+            imageCache[title] = 'https://via.placeholder.com/500?text=No+Cover';
+            img.src = imageCache[title];
           }
         })
         .catch(() => {
           img.setAttribute('data-fallback', '3');
-          img.src = 'https://via.placeholder.com/500?text=No+Cover';
+          imageCache[title] = 'https://via.placeholder.com/500?text=No+Cover';
+          img.src = imageCache[title];
         });
-    } else if (fallbackState === '2') {
+    } else if (fallbackState === '2' || fallbackState === 'cached') {
       img.setAttribute('data-fallback', '3');
-      img.src = 'https://via.placeholder.com/500?text=No+Cover';
+      imageCache[title] = 'https://via.placeholder.com/500?text=No+Cover';
+      img.src = imageCache[title];
     }
   };
 
@@ -322,8 +355,8 @@ function App() {
     <div className="app-container">
       <header className="header">
         <div className="logo" onClick={() => { setQuery(''); setResults([]); setAlbumView(null); }}>
-          <Music size={24} color="#fa243c" fill="#fa243c" />
-          <span style={{ cursor: 'pointer' }}>Music</span>
+          <Music size={24} color="#fa243c" stroke="#fa243c" strokeWidth={3} fill="none" />
+          <span style={{ cursor: 'pointer', color: "#ffffffff", fontWeight: "500" }}>Musicfy</span>
         </div>
         <div className="search-container">
           <form className="search-bar" onSubmit={searchMusic}>
@@ -456,7 +489,7 @@ function App() {
 
       {/* Mini Player */}
       {currentSong && (
-        <div className="player-container" onClick={() => setIsFullPlayerOpen(true)}>
+        <div className="player-container" onClick={() => setIsFullPlayerOpen(true)} onWheel={handleWheel}>
           <div
             className="mini-timeline-wrapper"
             onClick={e => e.stopPropagation()}
@@ -497,11 +530,11 @@ function App() {
 
           <div className="player-center" onClick={e => e.stopPropagation()}>
             <div className="player-controls">
-              <button className="control-btn media-btn" onClick={playPrev}><SkipBack size={18} fill="currentColor" /></button>
-              <button className="control-btn media-btn play-btn" onClick={() => setIsPlaying(!isPlaying)} disabled={!streamUrl}>
+              <button className="control-btn media-btn skip-btn" onClick={playPrev}><SkipBack size={18} fill="currentColor" /></button>
+              <button className="control-btn media-btn play-btn" onClick={() => setIsPlaying(!isPlaying)}>
                 {isPlaying ? <Pause size={18} fill="white" color="white" /> : <Play size={18} fill="white" color="white" style={{ marginLeft: '2px' }} />}
               </button>
-              <button className="control-btn media-btn" onClick={playNext}><SkipForward size={18} fill="currentColor" /></button>
+              <button className="control-btn media-btn skip-btn" onClick={playNext}><SkipForward size={18} fill="currentColor" /></button>
             </div>
           </div>
 
@@ -533,24 +566,42 @@ function App() {
             </div>
           </div>
 
-          {streamUrl && (
-            <audio
-              ref={audioRef}
-              src={streamUrl}
-              onEnded={handleSongEnd}
-              onTimeUpdate={() => {
-                if (audioRef.current) {
-                  setPlayed(audioRef.current.currentTime);
-                }
-              }}
-              onLoadedMetadata={() => {
-                if (audioRef.current) {
-                  setDuration(audioRef.current.duration);
-                }
-              }}
-              onError={(e) => console.error("Audio error", e)}
-            />
-          )}
+          <div style={{ position: 'absolute', left: '-9999px', top: '-9999px', visibility: 'hidden' }}>
+            {currentSong && (
+              <YouTube
+                videoId={currentSong.videoId}
+                opts={{
+                  height: '10',
+                  width: '10',
+                  playerVars: {
+                    autoplay: 1,
+                    controls: 0,
+                    disablekb: 1,
+                    fs: 0,
+                    playsinline: 1,
+                  },
+                }}
+                onReady={(event) => {
+                  playerRef.current = event.target;
+                  playerRef.current.setVolume(volume * 100);
+                  if (isPlaying) playerRef.current.playVideo();
+                }}
+                onStateChange={(event) => {
+                  if (event.data === 1) { // PLAYING
+                    setIsPlaying(true);
+                  } else if (event.data === 2) { // PAUSED
+                    setIsPlaying(false);
+                  } else if (event.data === 0) { // ENDED
+                    handleSongEnd();
+                  }
+                }}
+                onError={(e) => {
+                  console.error("YouTube Player Error", e);
+                  playNext();
+                }}
+              />
+            )}
+          </div>
         </div>
       )}
 
@@ -595,7 +646,7 @@ function App() {
                       const isActive = played >= line.time && (i === syncedLyrics.length - 1 || played < syncedLyrics[i + 1].time);
                       return (
                         <p key={i} className={`lyrics-line ${isActive ? 'active' : ''}`} onClick={() => {
-                          if (audioRef.current) { audioRef.current.currentTime = line.time; setPlayed(line.time); }
+                          if (playerRef.current) { playerRef.current.seekTo(line.time, true); setPlayed(line.time); }
                         }}>
                           {line.text || '\u00A0'}
                         </p>
@@ -652,7 +703,7 @@ function App() {
 
                   <div className="fp-main-controls">
                     <button className="control-btn media-btn" onClick={playPrev}><SkipBack size={28} fill="currentColor" /></button>
-                    <button className="control-btn media-btn play-btn" onClick={() => setIsPlaying(!isPlaying)} disabled={!streamUrl}>
+                    <button className="control-btn media-btn play-btn" onClick={() => setIsPlaying(!isPlaying)}>
                       {isPlaying ? <Pause size={36} fill="white" color="white" /> : <Play size={36} fill="white" color="white" style={{ marginLeft: '4px' }} />}
                     </button>
                     <button className="control-btn media-btn" onClick={playNext}><SkipForward size={28} fill="currentColor" /></button>
