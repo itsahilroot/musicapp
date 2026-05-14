@@ -21,7 +21,6 @@ function App() {
   const [volume, setVolume] = useState(0.5);
   const [isVolumeOpen, setIsVolumeOpen] = useState(false);
 
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [played, setPlayed] = useState(0);
   const [duration, setDuration] = useState(0);
   const [repeatMode, setRepeatMode] = useState<0 | 1 | 2>(0); // 0: none, 1: all, 2: one
