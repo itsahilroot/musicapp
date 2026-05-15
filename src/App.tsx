@@ -3,7 +3,8 @@ import { Search, Play, Pause, SkipForward, SkipBack, Music, Volume2, VolumeX, Ch
 import YouTube from 'react-youtube';
 import './index.css';
 
-import { getHome, getSuggestions } from './api';
+// CHANGE THIS LINE - Replace the import
+import { getHome, getSuggestions, searchMusic, getRelated, getPlaylist, getLyrics } from './api-client';
 
 const imageCache: Record<string, string> = {};
 
@@ -45,21 +46,29 @@ function App() {
   const playerRef = useRef<any>(null);
   const lyricsContainerRef = useRef<HTMLDivElement>(null);
 
+  // UPDATED: Fetch home data on mount
   useEffect(() => {
-    // Fetch home data on mount
-    getHome()
-      .then(data => {
+    const fetchHome = async () => {
+      try {
+        const data = await getHome();
         if (data.home) setHomeData(data.home);
-      })
-      .catch(err => console.error("Failed to fetch home data", err));
+      } catch (err) {
+        console.error("Failed to fetch home data", err);
+      }
+    };
+    fetchHome();
   }, []);
 
   // Suggestions debounced
   useEffect(() => {
     if (query.trim().length > 1) {
-      const delay = setTimeout(() => {
-        getSuggestions(query)
-          .then(data => setSuggestions(data.suggestions || []));
+      const delay = setTimeout(async () => {
+        try {
+          const data = await getSuggestions(query);
+          setSuggestions(data.suggestions || []);
+        } catch (err) {
+          console.error("Failed to fetch suggestions", err);
+        }
       }, 300);
       return () => clearTimeout(delay);
     } else {
@@ -67,6 +76,7 @@ function App() {
     }
   }, [query]);
 
+  // UPDATED: Load lyrics and related songs when currentSong changes
   useEffect(() => {
     if (currentSong) {
       setPlayed(0);
@@ -77,43 +87,46 @@ function App() {
       setIsSynced(false);
       setLyricsLoading(true);
 
-      import('./api').then(api => {
-        // Fetch lyrics
-        const artist = currentSong.artists?.[0]?.name || "";
-        const title = currentSong.title || "";
-        api.getLyrics(currentSong.videoId, title, artist)
-          .then(data => {
-            if (data.synced && data.lyrics) {
-              setIsSynced(true);
-              const lines = data.lyrics.split('\n').map((line: string) => {
-                const match = line.match(/\[(\d+):(\d+(?:\.\d+)?)\](.*)/);
-                if (match) {
-                  return {
-                    time: parseInt(match[1]) * 60 + parseFloat(match[2]),
-                    text: match[3].trim()
-                  };
-                }
-                return null;
-              }).filter(Boolean);
-              setSyncedLyrics(lines as any);
-            } else {
-              setLyrics(data.lyrics || "Lyrics not available.");
-            }
-          })
-          .catch(() => setLyrics("Lyrics not available."))
-          .finally(() => setLyricsLoading(false));
+      const fetchSongData = async () => {
+        try {
+          // Fetch lyrics
+          const artist = currentSong.artists?.[0]?.name || "";
+          const title = currentSong.title || "";
+          const lyricsData = await getLyrics(currentSong.videoId, title, artist);
 
-        // Fetch related if not in album view
-        if (!albumView) {
-          api.getRelated(currentSong.videoId)
-            .then(data => {
-              if (data.related) setRelatedSongs(data.related);
-            })
-            .catch(err => console.error("Failed to fetch related", err));
+          if (lyricsData.synced && lyricsData.lyrics) {
+            setIsSynced(true);
+            const lines = lyricsData.lyrics.split('\n').map((line: string) => {
+              const match = line.match(/\[(\d+):(\d+(?:\.\d+)?)\](.*)/);
+              if (match) {
+                return {
+                  time: parseInt(match[1]) * 60 + parseFloat(match[2]),
+                  text: match[3].trim()
+                };
+              }
+              return null;
+            }).filter(Boolean);
+            setSyncedLyrics(lines as any);
+          } else {
+            setLyrics(lyricsData.lyrics || "Lyrics not available.");
+          }
+
+          // Fetch related if not in album view
+          if (!albumView) {
+            const relatedData = await getRelated(currentSong.videoId);
+            if (relatedData.related) setRelatedSongs(relatedData.related);
+          }
+        } catch (error) {
+          console.error("Failed to fetch song data:", error);
+          setLyrics("Lyrics not available.");
+        } finally {
+          setLyricsLoading(false);
         }
-      });
+      };
+
+      fetchSongData();
     }
-  }, [currentSong]);
+  }, [currentSong, albumView]);
 
   useEffect(() => {
     if (playerRef.current) {
@@ -187,6 +200,7 @@ function App() {
     }
   };
 
+  // UPDATED: Execute search using the new API
   const executeSearch = async (searchQuery: string) => {
     if (!searchQuery) return;
     setQuery(searchQuery);
@@ -194,11 +208,8 @@ function App() {
     setLoading(true);
     setAlbumView(null);
     try {
-      import('./api').then(api => {
-        api.searchMusic(searchQuery).then(data => {
-          setResults(data.results || []);
-        }).catch(err => console.error("Search API error:", err));
-      });
+      const data = await searchMusic(searchQuery);
+      setResults(data.results || []);
     } catch (error) {
       console.error("Failed to search", error);
     } finally {
@@ -206,12 +217,13 @@ function App() {
     }
   };
 
-  const searchMusic = (e: React.FormEvent) => {
+  const searchMusicHandler = (e: React.FormEvent) => {
     e.preventDefault();
     executeSearch(query);
   };
 
-  const handleItemClick = (item: any) => {
+  // UPDATED: Handle item click (song, playlist, album)
+  const handleItemClick = async (item: any) => {
     // If it's a song, play it
     if (item.videoId) {
       setCurrentSong(item);
@@ -221,23 +233,23 @@ function App() {
     else if (item.playlistId || item.browseId) {
       const id = item.playlistId || item.browseId;
       setLoading(true);
-      import('./api').then(api => {
-        api.getPlaylist(id)
-          .then(data => {
-            if (data.tracks) {
-              setAlbumView({
-                title: data.title || item.title,
-                tracks: data.tracks,
-                cover: item.thumbnails?.[item.thumbnails.length - 1]?.url
-              });
-            } else {
-              console.error("Failed to load playlist or album");
-            }
-            setResults([]); // hide search results
-          })
-          .catch(err => console.error(err))
-          .finally(() => setLoading(false));
-      });
+      try {
+        const data = await getPlaylist(id);
+        if (data.tracks) {
+          setAlbumView({
+            title: data.title || item.title,
+            tracks: data.tracks,
+            cover: item.thumbnails?.[item.thumbnails.length - 1]?.url
+          });
+        } else {
+          console.error("Failed to load playlist or album");
+        }
+        setResults([]); // hide search results
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
     }
   };
 
@@ -305,7 +317,7 @@ function App() {
         img.src = imageCache[title];
         return;
       }
-      
+
       img.setAttribute('data-fallback', '1');
       if (videoId) {
         img.src = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
@@ -359,7 +371,7 @@ function App() {
           <span style={{ cursor: 'pointer', color: "#ffffffff", fontWeight: "500" }}>Musicfy</span>
         </div>
         <div className="search-container">
-          <form className="search-bar" onSubmit={searchMusic}>
+          <form className="search-bar" onSubmit={searchMusicHandler}>
             <Search size={18} color="#ebebf599" />
             <input
               type="text"

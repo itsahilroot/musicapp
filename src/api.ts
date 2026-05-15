@@ -31,8 +31,8 @@ const customFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const isNative = (window as any).Capacitor?.isNative;
   if (!isNative && (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.'))) {
     url = url.replace('https://www.youtube.com', '/proxy/youtube')
-             .replace('https://music.youtube.com', '/proxy/music')
-             .replace('https://suggestqueries.google.com', '/proxy/suggest');
+      .replace('https://music.youtube.com', '/proxy/music')
+      .replace('https://suggestqueries.google.com', '/proxy/suggest');
   }
 
   try {
@@ -56,15 +56,15 @@ const initYt = async () => {
 
 export const searchMusic = async (query: string) => {
   const yt = await initYt();
-  
+
   const [songs, albums, artists] = await Promise.all([
     yt.music.search(query, { type: 'song' }).catch(() => ({})),
     yt.music.search(query, { type: 'album' }).catch(() => ({})),
     yt.music.search(query, { type: 'artist' }).catch(() => ({}))
   ]);
-  
+
   const extract = (res: any) => res.songs?.contents || res.contents?.[0]?.contents || res.albums?.contents || res.artists?.contents || [];
-  
+
   const allContents = [
     ...extract(songs).slice(0, 10),
     ...extract(albums).slice(0, 5),
@@ -95,11 +95,11 @@ export const streamMusic = async (videoId: string) => {
   try {
     const info = await yt.getBasicInfo(videoId);
     const format = info.chooseFormat({ type: 'audio', quality: 'best' });
-    
+
     if (format?.url) {
       return { url: format.url };
     }
-    
+
     // @ts-ignore - signatureCipher might be available
     if ((format?.signature_cipher || format?.signatureCipher) && format?.decipher) {
       const decipheredUrl = await Promise.resolve(format.decipher(yt.session.player));
@@ -235,8 +235,8 @@ export const getLyrics = async (videoId: string, title: string, artist: string) 
         if (data.plainLyrics) return { lyrics: data.plainLyrics, synced: false };
       }
     }
-  } catch (e) {}
-  
+  } catch (e) { }
+
   try {
     const yt = await initYt();
     const lyrics = await yt.music.getLyrics(videoId);
