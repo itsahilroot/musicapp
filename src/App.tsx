@@ -316,7 +316,8 @@ function App() {
     if (fallbackState === '1' || (fallbackState === '0' && !videoId)) {
       img.setAttribute('data-fallback', '2');
       let jioSaavnUrl = `https://www.jiosaavn.com/api.php?__call=autocomplete.get&query=${encodeURIComponent(title)}&_format=json&_marker=0&ctx=web6dot0`;
-      if (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.')) {
+      const isNative = (window as any).Capacitor?.isNative;
+      if (!isNative && (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.'))) {
         jioSaavnUrl = `/proxy/jiosaavn/api.php?__call=autocomplete.get&query=${encodeURIComponent(title)}&_format=json&_marker=0&ctx=web6dot0`;
       }
       fetch(jioSaavnUrl)

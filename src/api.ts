@@ -28,7 +28,8 @@ const customFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     delete newInit.body;
   }
 
-  if (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.')) {
+  const isNative = (window as any).Capacitor?.isNative;
+  if (!isNative && (window.location.hostname === 'localhost' || window.location.hostname.startsWith('192.168.'))) {
     url = url.replace('https://www.youtube.com', '/proxy/youtube')
              .replace('https://music.youtube.com', '/proxy/music')
              .replace('https://suggestqueries.google.com', '/proxy/suggest');
